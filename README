@@ -1,0 +1,41 @@
+Simple reservoir model
+
+This simple reserovir model simulates regulated streamflow in a grid-based river network, given naturalized flow (RVIC routed flow). The model simulate reservoir operation at each dam based on:
+    - rule curve
+    - reservoir capacity
+    - reservoir bottom pool storage
+    - Minimum allowed release
+    - Maximum allowed release
+
+#-----------------------------------------------------------------------#
+# Usage
+#-----------------------------------------------------------------------#
+./scr/reservoir_network.py <config_file>
+
+#-----------------------------------------------------------------------#
+# File Structure
+#-----------------------------------------------------------------------#
+
+[scr] - source script for reservoir modeling
+
+[input_example] - example of input files for reservoir modeling
+    * reservoir_network.Tennessee.max_flow_exceed0.1.cfg
+        - Config file example
+    * reservoir_to_model.max_flow_exceed0.1.csv
+        - Reservoir info csv file example
+    * dam7_Douglas.txt
+        - Rule curve info example
+
+[tools]
+    * determine_max_flow_dams_fromUSGS_TVA.py
+        - Determine maximum allowed release at each dam from USGS and TVA pass-through data
+    * determine_max_flow_dams_fromRVICflow.py
+        - Determine maximum allowed release at each dam from RVIC simulated flow
+
+
+
+
+
+
+
+
