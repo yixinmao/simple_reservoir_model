@@ -386,7 +386,7 @@ for i in range(len(df_dam_info)):
     s_release, s_storage = simulate_reservoir_operation(s_rvic_flow, s_rule_curve, \
                                               init_S, top_vol, bot_vol, max_flow, min_flow)
     #=== Modify flow for all downstream grid cells ===#
-    da_flow = my_functions.modify_flow_all_downstream_cell(\
+    da_flow = modify_flow_all_downstream_cell(\
                         lat, lon, \
                         orig_flow=s_rvic_flow, \
                         release=s_release, da_flow=da_flow, dlatlon=cfg['NETWORK']['dlatlon'], \
