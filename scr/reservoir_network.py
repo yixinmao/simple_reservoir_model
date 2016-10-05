@@ -226,7 +226,7 @@ def find_downstream_grid(da_flowdir, lat, lon, dlatlon):
 # -------------------------------------------------------------------- #
 
 # -------------------------------------------------------------------- #
-def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, dlatlon, da_flowdir, da_flowdis, velocity):
+def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, dlatlon, da_flowdir, da_flowdis, velocity, diffusivity, t_cell):
     ''' This function modifies flow at all downstream cells from an operated dam
 
     Input:
@@ -238,6 +238,8 @@ def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, dlatl
         da_flowdir: xray.DataArray of flow direction file (1-8 format)
         da_flowdis: xray.DataArray of flow distance file [m]
         velocity: wave velocity [m/s]
+        diffusivity: diffusivity [m2/s]
+        t_cell: length of unit hydrogragh [day]
 
     Return: xray.DataArray of modified streamflow field after this dam is operated
             (time, lat, lon)
@@ -256,6 +258,7 @@ def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, dlatl
 
     #=== Calculate delta flow ===#
     s_dflow = release - orig_flow[pd.date_range(start_date_to_run, end_date_to_run)]
+    ndays_to_run = len(s_dflow)
 
     #=== Modify flow at the first grid cell (i.e., the dam grid cell) ===#
     da_flow.loc[pd.date_range(start_date_to_run, end_date_to_run),lat,lon] = release
@@ -272,22 +275,49 @@ def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, dlatl
 
     #=== Loop over each downstream grid cell, and modify flow ===#
     while 1:
-        #=== Identify time lag (to flow from dam to the current grid cell) ===#
-        fdis = fdis + da_flowdis.loc[lat_current, lon_current]
-        lag_days = int(round(fdis / velocity / 86400.0))  # [day], precise to integer days
+        #=== Calculate impulse response function for the current grid cell ===#
+        fdis = fdis + da_flowdis.loc[lat_current, lon_current].values
+        time = np.arange(1, t_cell*24 + 1, 1, dtype=np.float64)  # unit: hour
+        # Calculate green's function
+        exponent = -1 * np.power(velocity * 3600 * time - fdis, 2) / \
+                   (4 * diffusivity * 3600 * time)  # unit: -
+        green = fdis / (2 * time * np.sqrt(np.pi * time * diffusivity * 3600)) \
+                * np.exp(exponent)  # unit: day-1
+        # Normalize
+        uh = green / green.sum()  # a time series of unit hydrograph
+        # Aggregate to daily
+        uh_daily = uh.reshape([t_cell, 24]).sum(axis=1)
+
         #=== Modify flow for the current grid cell ===#
-        # Identify lagged time range
-        start_date_lagged = start_date_to_run + dt.timedelta(days=lag_days)
-        end_date_lagged = end_date_to_run + dt.timedelta(days=lag_days)
-        # Modify flow for this grid cell
-        if (end_date_lagged-orig_flow.index[-1]).days <= 0: # if within orig_flow time range
-            da_flow.loc[pd.date_range(start_date_lagged, end_date_lagged),lat_current,lon_current] \
-                    += s_dflow.values
+        # Initialize dflow_accum - time series of total contribution of dflow
+        # at the dam to the current grid cell
+        dflow_accum = np.zeros(ndays_to_run+t_cell-1)
+        # Create a matrix = s_dflow (column vector) .* uh_daily (row vector)
+        # dim: [ndays_to_run+t_cell-1, t_cell]
+        dflow_uh_temp = np.dot(s_dflow.values.reshape([len(s_dflow), 1]),
+                               uh_daily.reshape([1, len(uh_daily)]))
+        # Sum up every row of dflow_uh_temp with time shift
+        for t in range(len(dflow_uh_temp)):
+            dflow_accum[t:(t+t_cell)] += dflow_uh_temp[t, :]
+        # Put dflow_accum into a pd.Series
+        s_dflow_accum = pd.Series(
+                dflow_accum,
+                index=pd.date_range(start_date_to_run,
+                                    periods=ndays_to_run+t_cell-1,
+                                    freq='D'))
+
+        # Modify flow for this grid cell (add s_dflow_accum to orig_flow)
+        if (s_dflow_accum.index[-1] - orig_flow.index[-1]).days <= 0:
+        # if within orig_flow time range
+            da_flow.loc[pd.date_range(start_date_to_run, s_dflow_accum.index[-1]),\
+                                      lat_current, lon_current] \
+                    += s_dflow_accum.values
         else:   # if later than orig_flow time range
-            days_to_modify = (orig_flow.index[-1] - start_date_lagged).days + 1
-            da_flow.loc[pd.date_range(start_date_lagged, orig_flow.index[-1]),\
-                                      lat_current,lon_current] \
-                    += s_dflow.values[0:days_to_modify]
+            days_to_modify = (orig_flow.index[-1] - start_date_to_run).days + 1
+            da_flow.loc[pd.date_range(start_date_to_run, orig_flow.index[-1]),\
+                                      lat_current, lon_current] \
+                    += s_dflow_accum.values[0:days_to_modify]
+
         #=== Move to the next downstream grid cell ===#
         lat_current, lon_current = find_downstream_grid(da_flowdir, \
                                         lat_current, lon_current, dlatlon)
@@ -390,7 +420,9 @@ for i in range(len(df_dam_info)):
                         lat, lon, \
                         orig_flow=s_rvic_flow, \
                         release=s_release, da_flow=da_flow, dlatlon=cfg['NETWORK']['dlatlon'], \
-                        da_flowdir=da_flowdir, da_flowdis=da_flowdis, velocity=velocity)    
+                        da_flowdir=da_flowdir, da_flowdis=da_flowdis, velocity=velocity,
+                        diffusivity=cfg['NETWORK']['diffusivity'],
+                        t_cell=cfg['NETWORK']['t_cell'])    
     #=== Save storage and rule curve ===#
     df = pd.DataFrame()
     df['year'] = s_storage.index.year
