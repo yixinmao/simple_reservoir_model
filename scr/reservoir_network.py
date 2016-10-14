@@ -226,20 +226,18 @@ def find_downstream_grid(da_flowdir, lat, lon, dlatlon):
 # -------------------------------------------------------------------- #
 
 # -------------------------------------------------------------------- #
-def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, dlatlon, da_flowdir, da_flowdis, velocity, diffusivity, t_cell):
+def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, da_flowdir, dlatlon, ds_rvic_param):
     ''' This function modifies flow at all downstream cells from an operated dam
 
     Input:
         lat, lon: lat and lon of the dam
         orig_flow: pd.Series of original inflow at the dam [cfs]
         release: pd.Series of simulated release at the dam [cfs]; only for period with operation
-        da_flow: xray.DataArray of original streamflow field (time, lat, lon)
+        da_flowdir: xr.DataArray of flow direction
         dlatlon: delta lat and lon (e.g., 0.125)
-        da_flowdir: xray.DataArray of flow direction file (1-8 format)
-        da_flowdis: xray.DataArray of flow distance file [m]
-        velocity: wave velocity [m/s]
-        diffusivity: diffusivity [m2/s]
-        t_cell: length of unit hydrogragh [day]
+        da_flow: xray.DataArray of original streamflow field (time, lat, lon)
+        ds_rvic_param: RVIC output parameter file xr.Dataset
+
 
     Return: xray.DataArray of modified streamflow field after this dam is operated
             (time, lat, lon)
@@ -263,9 +261,6 @@ def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, dlatl
     #=== Modify flow at the first grid cell (i.e., the dam grid cell) ===#
     da_flow.loc[pd.date_range(start_date_to_run, end_date_to_run),lat,lon] = release
 
-    #=== Initialize flow distance from the dam to the current downstream grid cell [m] ===#
-    fdis = 0
-
     #=== Move to the immediate downstream grid cell ===#
     lat_current, lon_current = find_downstream_grid(da_flowdir, lat, lon, dlatlon)
     if lat_current==-999 and lon_current==-999:
@@ -273,20 +268,21 @@ def modify_flow_all_downstream_cell(lat, lon, orig_flow, release, da_flow, dlatl
     # done with all modification for this dam
         return da_flow
 
+    #=== Extract unit hydrograph info ===#
+    t_cell = len(ds_rvic_param['timesteps'])  # length of uh [day]
+
     #=== Loop over each downstream grid cell, and modify flow ===#
     while 1:
-        #=== Calculate impulse response function for the current grid cell ===#
-        fdis = fdis + da_flowdis.loc[lat_current, lon_current].values
-        time = np.arange(1, t_cell*24 + 1, 1, dtype=np.float64)  # unit: hour
-        # Calculate green's function
-        exponent = -1 * np.power(velocity * 3600 * time - fdis, 2) / \
-                   (4 * diffusivity * 3600 * time)  # unit: -
-        green = fdis / (2 * time * np.sqrt(np.pi * time * diffusivity * 3600)) \
-                * np.exp(exponent)  # unit: day-1
-        # Normalize
-        uh = green / green.sum()  # a time series of unit hydrograph
-        # Aggregate to daily
-        uh_daily = uh.reshape([t_cell, 24]).sum(axis=1)
+        #=== Extract unit hydrograph for this source-sink pair from RVIC param ===#
+        # Extract outlet ind
+        outlet_ind = np.where((ds_rvic_param['outlet_lat'].values==lat_current) * \
+                              (ds_rvic_param['outlet_lon'].values==lon_current))[0][0]
+        # Extract source ind
+        source_ind = np.where((ds_rvic_param['source2outlet_ind'].values==outlet_ind) * \
+                              (ds_rvic_param['source_lat'].values==lat) * \
+                              (ds_rvic_param['source_lon'].values==lon))[0][0]
+        # Extract unit hydrograph
+        uh_daily = ds_rvic_param['unit_hydrograph'][:, source_ind, 0].values
 
         #=== Modify flow for the current grid cell ===#
         # Initialize dflow_accum - time series of total contribution of dflow
@@ -371,9 +367,7 @@ end_date_to_run = dt.datetime(cfg['PARAM']['end_date_to_run'][0], \
 df_dam_info = pd.read_csv(cfg['DAM_INFO']['dam_info_csv'])
 #=== Load network info ===@
 ds_network = xray.open_dataset(cfg['NETWORK']['route_nc'])
-da_flowdir = ds_network['Flow_Direction']
-da_flowdis = ds_network['Flow_Distance']
-velocity = cfg['NETWORK']['wave_velocity']  # wave velocity
+ds_rvic_param = xray.open_dataset(cfg['NETWORK']['rvic_param_nc'])
 
 #====================================================================#
 # Simulate each dam and modify flow downstream
@@ -419,10 +413,10 @@ for i in range(len(df_dam_info)):
     da_flow = modify_flow_all_downstream_cell(\
                         lat, lon, \
                         orig_flow=s_rvic_flow, \
-                        release=s_release, da_flow=da_flow, dlatlon=cfg['NETWORK']['dlatlon'], \
-                        da_flowdir=da_flowdir, da_flowdis=da_flowdis, velocity=velocity,
-                        diffusivity=cfg['NETWORK']['diffusivity'],
-                        t_cell=cfg['NETWORK']['t_cell'])    
+                        release=s_release, da_flow=da_flow,
+                        da_flowdir=ds_network['Flow_Direction'],
+                        dlatlon=cfg['NETWORK']['dlatlon'], \
+                        ds_rvic_param=ds_rvic_param)
     #=== Save storage and rule curve ===#
     df = pd.DataFrame()
     df['year'] = s_storage.index.year
